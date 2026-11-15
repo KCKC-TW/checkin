@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>直播報到</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  /* 要改的設定在下方 <script> 開頭：SCRIPT_URL 與 CLIENT_ID */
+  :root{
+    --cream:#FFF8F1; --red:#E8513A; --red-d:#C93F2A; --navy:#1C2B4A; --blue:#7ABCDB;
+    --line:#EFE3D6; --muted:#6B7488; --ok:#1E9E6A;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--cream);color:var(--navy);
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    display:flex;align-items:flex-start;justify-content:center;padding:48px 16px}
+  .card{width:100%;max-width:440px;background:#fff;border:1px solid var(--line);border-radius:18px;
+    padding:32px 28px;box-shadow:0 10px 30px rgba(28,43,74,.06)}
+  .tag{display:inline-block;font-size:12px;letter-spacing:.08em;color:var(--red);font-weight:700;margin-bottom:6px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 24px}
+  .step{border-top:1px solid var(--line);padding-top:20px;margin-top:20px}
+  .step h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  .num{width:22px;height:22px;border-radius:50%;background:var(--navy);color:#fff;font-size:12px;
+    display:inline-flex;align-items:center;justify-content:center}
+  .done .num{background:var(--ok)}
+  .who{display:flex;align-items:center;gap:10px;background:var(--cream);border-radius:12px;padding:10px 12px;font-size:14px}
+  .who img{width:32px;height:32px;border-radius:50%}
+  .who small{display:block;color:var(--muted)}
+  .link{background:none;border:0;color:var(--red);font-size:13px;cursor:pointer;padding:0;margin-left:auto}
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 6px}
+  input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;font-size:16px;color:var(--navy);background:#fff}
+  input:focus{outline:2px solid var(--blue);border-color:transparent}
+  .btn{display:block;width:100%;margin-top:18px;padding:14px;border:0;border-radius:12px;background:var(--red);color:#fff;
+    font-size:16px;font-weight:700;cursor:pointer;text-align:center;text-decoration:none}
+  .btn:hover{background:var(--red-d)}
+  .btn:disabled{background:#E6C9C1;cursor:not-allowed}
+  .msg{margin-top:14px;padding:12px 14px;border-radius:10px;font-size:14px;line-height:1.6;display:none}
+  .msg.err{display:block;background:#FDECEA;color:#A8321F}
+  .msg.info{display:block;background:#EEF6FB;color:var(--navy)}
+  .success{text-align:center}
+  .success .big{font-size:44px}
+  .warn{background:#FFF4E5;border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.7;text-align:left;margin-top:16px}
+  .muted{color:var(--muted);font-size:13px}
+  .disabled{opacity:.45;pointer-events:none}
+  footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
+  footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="formView">
+    <span class="tag">LIVE CHECK-IN</span>
+    <h1 id="title">直播報到</h1>
+    <p class="sub" id="sub">完成報到後就會拿到直播連結</p>
+
+    <div class="step" id="step1">
+      <h2><span class="num">1</span>用你要進直播的 Google 帳號登入</h2>
+      <div id="gbtn"></div>
+      <div id="who" class="who" style="display:none"></div>
+      <p class="muted" style="margin:10px 0 0">等一下進 Google Meet 也要用同一個帳號喔。</p>
+    </div>
+
+    <div class="step disabled" id="step2">
+      <h2><span class="num">2</span>輸入學號與報名 Email</h2>
+      <form id="form" autocomplete="on">
+        <label for="sid">學號</label>
+        <input id="sid" name="sid" placeholder="例如 KC-001" required autocapitalize="characters">
+        <label for="email">報名時填的 Email</label>
+        <input id="email" name="email" type="email" placeholder="報名表上的 Email（不一定是 Gmail）" required>
+        <button class="btn" id="submit" type="submit">完成報到</button>
+      </form>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div id="okView" class="success" style="display:none">
+    <div class="big">🎉</div>
+    <h1>報到完成！</h1>
+    <p class="sub" id="okName"></p>
+    <a class="btn" id="meetBtn" href="#" target="_blank" rel="noopener">進入直播</a>
+    <div class="warn" id="okWarn"></div>
+    <p class="muted" style="margin-top:14px">之後想再進直播，回到這一頁就會直接看到這個按鈕，不用重新報到。</p>
+  </div>
+
+  <footer>
+    凱西創作者學堂｜<a href="https://kc-hub.kclive.link" target="_blank" rel="noopener">kc-hub.kclive.link</a>｜IG＠kcaifun
+  </footer>
+</div>
+
+<script>
+/* ================== 設定（只要改這兩行） ================== */
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzJvac-xlHsOMiQqSxunVlT6-a7YhkDZa2rhmZZtTQsvvd_XDSF4ekWyPzPH0l13WcqIg/exec';
+const CLIENT_ID  = '829310906546-ef5m56070jn40usu6emsifv3elsej2lk.apps.googleusercontent.com';
+/* ========================================================== */
+
+let idToken = null, profile = null;
+const $ = (id) => document.getElementById(id);
+
+function showMsg(text, type){ const m=$('msg'); m.className='msg '+(type||'err'); m.textContent=text; }
+function hideMsg(){ $('msg').className='msg'; }
+
+function decodeJwt(t){
+  const p = t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');
+  const json = decodeURIComponent(atob(p).split('').map(c=>'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+  return JSON.parse(json);
+}
+
+function onGoogle(resp){
+  idToken = resp.credential;
+  profile = decodeJwt(idToken);
+  $('gbtn').style.display='none';
+  const who=$('who'); who.style.display='flex';
+  who.innerHTML='';
+  if(profile.picture){ const img=document.createElement('img'); img.src=profile.picture; img.alt=''; who.appendChild(img); }
+  const box=document.createElement('div');
+  const b=document.createElement('b'); b.textContent=profile.name||'';
+  const s=document.createElement('small'); s.textContent=profile.email||'';
+  box.append(b,s); who.appendChild(box);
+  const sw=document.createElement('button'); sw.className='link'; sw.type='button'; sw.textContent='換帳號';
+  sw.onclick=()=>{ google.accounts.id.disableAutoSelect(); location.reload(); };
+  who.appendChild(sw);
+  $('step1').classList.add('done');
+  checkReturning();
+}
+
+// 已經報到過的人：直接給 Meet 連結，不用再填學號
+async function checkReturning(){
+  showMsg('確認報到狀態中…','info');
+  try{
+    const r = await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({ action:'lookup', idToken }) });
+    const j = await r.json();
+    if(j.ok){ hideMsg(); return showSuccess(j); }
+  }catch(e){ /* 查不到就走一般報到 */ }
+  hideMsg();
+  $('step2').classList.remove('disabled');
+  $('sid').focus();
+}
+
+function showSuccess(j){
+  let url = j.meetUrl || '#';
+  try{ const u=new URL(url); u.searchParams.set('authuser', j.gmail); url=u.toString(); }catch(_){}
+  $('meetBtn').href = url;
+  $('okView').querySelector('h1').textContent = j.returning ? '你已經報到過了 👋' : '報到完成！';
+  $('okName').textContent = (j.name ? j.name+'，' : '') + '歡迎來到「'+(j.session||'直播')+'」';
+  $('okWarn').innerHTML = '';
+  const t1=document.createElement('div'); t1.innerHTML='📌 請用 <b></b> 這個帳號進入 Google Meet。';
+  t1.querySelector('b').textContent=j.gmail;
+  const t2=document.createElement('div'); t2.textContent='你在直播中顯示的名字會是「'+j.googleName+'」。用其他帳號進入可能會被請出直播間喔。';
+  $('okWarn').append(t1,t2);
+  $('formView').style.display='none';
+  $('okView').style.display='block';
+}
+
+window.addEventListener('load', async () => {
+  // 場次資訊
+  try{
+    const r = await fetch(SCRIPT_URL+'?action=info');
+    const j = await r.json();
+    if(j.session){ $('title').textContent=j.session+'｜報到'; document.title=j.session+'｜報到'; }
+    if(j.open===false){ showMsg('目前尚未開放報到，請稍後再回來這一頁。','info'); }
+  }catch(e){ /* 讀不到也不影響報到 */ }
+
+  // Google 登入按鈕
+  const init = () => {
+    if(!window.google || !google.accounts){ return setTimeout(init, 200); }
+    google.accounts.id.initialize({ client_id: CLIENT_ID, callback: onGoogle, ux_mode: 'popup', auto_select: true });
+    google.accounts.id.renderButton($('gbtn'), { theme:'outline', size:'large', text:'signin_with', shape:'pill', locale:'zh-TW', width: 320 });
+    google.accounts.id.prompt(); // 之前登入過的人會自動登入
+  };
+  init();
+});
+
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if(!idToken){ return showMsg('請先完成步驟 1：用 Google 登入。'); }
+  const btn=$('submit'); btn.disabled=true; btn.textContent='報到中…'; hideMsg();
+  try{
+    const r = await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({
+      action:'checkin', idToken, studentId: $('sid').value.trim(), email: $('email').value.trim()
+    })});
+    const j = await r.json();
+    if(!j.ok){
+      if(j.code==='token'){ idToken=null; }
+      showMsg(j.msg || '報到失敗，請再試一次。');
+      return;
+    }
+    showSuccess(j);
+  }catch(err){
+    showMsg('網路連線有問題，請稍後再試一次。');
+  }finally{
+    btn.disabled=false; btn.textContent='完成報到';
+  }
+});
+</script>
+</body>
+</html>
