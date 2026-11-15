@@ -63,10 +63,12 @@
     </div>
 
     <div class="step disabled" id="step2">
-      <h2><span class="num">2</span>輸入學號與報名 Email</h2>
+      <h2><span class="num">2</span><span id="step2title">輸入學號與報名 Email</span></h2>
       <form id="form" autocomplete="on">
-        <label for="sid">學號</label>
-        <input id="sid" name="sid" placeholder="例如 KC-001" required autocapitalize="characters">
+        <div id="sidBox">
+          <label for="sid">學號</label>
+          <input id="sid" name="sid" placeholder="例如 KC-001" required autocapitalize="characters">
+        </div>
         <label for="email">報名時填的 Email</label>
         <input id="email" name="email" type="email" placeholder="報名表上的 Email（不一定是 Gmail）" required>
         <button class="btn" id="submit" type="submit">完成報到</button>
@@ -95,7 +97,7 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzJvac-xlHsOMiQqSxun
 const CLIENT_ID  = '829310906546-ef5m56070jn40usu6emsifv3elsej2lk.apps.googleusercontent.com';
 /* ========================================================== */
 
-let idToken = null, profile = null;
+let idToken = null, profile = null, mode = 'id';
 const $ = (id) => document.getElementById(id);
 
 function showMsg(text, type){ const m=$('msg'); m.className='msg '+(type||'err'); m.textContent=text; }
@@ -135,7 +137,7 @@ async function checkReturning(){
   }catch(e){ /* 查不到就走一般報到 */ }
   hideMsg();
   $('step2').classList.remove('disabled');
-  $('sid').focus();
+  (mode==='email' ? $('email') : $('sid')).focus();
 }
 
 function showSuccess(j){
@@ -160,6 +162,12 @@ window.addEventListener('load', async () => {
     const j = await r.json();
     if(j.session){ $('title').textContent=j.session+'｜報到'; document.title=j.session+'｜報到'; }
     if(j.open===false){ showMsg('目前尚未開放報到，請稍後再回來這一頁。','info'); }
+    if(j.mode==='email'){
+      mode='email';
+      $('sidBox').style.display='none';
+      $('sid').required=false;
+      $('step2title').textContent='輸入報名時填的 Email';
+    }
   }catch(e){ /* 讀不到也不影響報到 */ }
 
   // Google 登入按鈕
