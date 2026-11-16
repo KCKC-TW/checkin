@@ -1,0 +1,931 @@
+/**
+ * KC 直播點名系統 — Apps Script 後端
+ * 貼到「名單試算表 → 擴充功能 → Apps Script」的 Code.gs
+ * 第一次使用：重新整理試算表 → 選單「🎯 點名系統」→「① 初始化」
+ */
+
+const SHEET = {
+  SETTINGS: '設定',
+  ROSTER: '名單',
+  LOG: '報到紀錄',
+  STRANGER: '陌生人',
+  HISTORY: '場次紀錄',
+  SESSIONS: '場次清單',
+  PREP: '預備名單',
+  TEAM: '團隊',
+};
+const TEAM_HEADERS = ['Email', '角色', 'Google名稱', '最後登入'];
+const SESSION_HEADERS = ['場次ID', '場次名稱', '日期時間', 'Meet 連結', '狀態', '報告連結', '建立時間'];
+const PREP_HEADERS = ['場次ID', '學號', '姓名', '報名Email'];
+
+const ROSTER_HEADERS = ['學號', '姓名', '報名Email', '報到狀態', '報到時間', 'Google名稱', 'Gmail', '首次出現', '最後出現', '出席分鐘', '備註'];
+const C = {}; // 欄位索引（0 起算）
+ROSTER_HEADERS.forEach((h, i) => (C[h] = i));
+
+const LOG_HEADERS = ['時間', '結果', '輸入學號', '輸入Email', 'Google名稱', 'Gmail', '說明'];
+const STRANGER_HEADERS = ['Meet 顯示名稱', '首次出現', '最後出現', '說明'];
+const HISTORY_HEADERS = ['產生時間', '場次名稱', '名單人數', '已報到', '實際出席', '已報到未出席', '未報到', '陌生人', '異常報到', '報告連結'];
+
+/* ---------------- 選單 ---------------- */
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🎯 點名系統')
+    .addItem('① 初始化（第一次使用）', 'setup')
+    .addSeparator()
+    .addItem('產生本場報告（存檔＋Excel）', 'menuReport')
+    .addItem('開新場次（清空報到資料）', 'menuNewSession')
+    .addToUi();
+}
+
+function setup() {
+  const ss = SpreadsheetApp.getActive();
+
+  const s = getOrCreate_(SHEET.SETTINGS);
+  if (s.getLastRow() < 2) {
+    const key = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+    s.getRange(1, 1, 7, 3).setValues([
+      ['項目', '值', '說明'],
+      ['場次名稱', '第一場直播', '會顯示在報到頁和報告上'],
+      ['Meet 連結', 'https://meet.google.com/xxx-xxxx-xxx', '報到成功後才會給學員'],
+      ['開放報到', 'TRUE', '改成 FALSE 就關閉報到'],
+      ['Google 登入用戶端 ID', '', '從 Google Cloud Console 取得（見安裝說明 步驟 B）'],
+      ['管理金鑰', key, '貼到 Chrome 外掛設定；不要外流'],
+      ['報告資料夾 ID', '', '留白會自動建立「直播點名報告」資料夾'],
+    ]);
+    styleHeader_(s, 3);
+    s.setColumnWidth(1, 170); s.setColumnWidth(2, 380); s.setColumnWidth(3, 340);
+  }
+
+  const r = getOrCreate_(SHEET.ROSTER);
+  if (r.getLastRow() < 1) {
+    r.getRange(1, 1, 1, ROSTER_HEADERS.length).setValues([ROSTER_HEADERS]);
+    styleHeader_(r, ROSTER_HEADERS.length);
+    r.getRange('A:A').setNumberFormat('@'); // 學號當文字
+    r.getRange(1, 4, 1, 8).setBackground('#FCE3DC'); // 系統自動填的欄位
+    r.getRange(2, 1, 1, 3).setValues([['KC-001', '範例學員（可刪除）', 'example@yahoo.com.tw']]);
+  }
+
+  ensureHeaders_(SHEET.LOG, LOG_HEADERS);
+  ensureHeaders_(SHEET.STRANGER, STRANGER_HEADERS);
+  ensureHeaders_(SHEET.HISTORY, HISTORY_HEADERS);
+
+  const sheet1 = ss.getSheetByName('工作表1') || ss.getSheetByName('Sheet1');
+  if (sheet1 && sheet1.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(sheet1);
+
+  ss.setActiveSheet(r);
+  SpreadsheetApp.getUi().alert(
+    '初始化完成 ✅\n\n' +
+      '1. 到「名單」貼上 學號／姓名／報名Email（前三欄）\n' +
+      '2. 到「設定」填 Meet 連結、Google 登入用戶端 ID\n' +
+      '3. 照安裝說明部署成網頁應用程式'
+  );
+}
+
+function menuReport() {
+  const res = buildReport_();
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:sans-serif;line-height:1.7">' +
+      '<p>報告已產生並存到雲端硬碟 ✅</p>' +
+      '<p>名單 ' + res.summary.total + '｜已報到 ' + res.summary.checked + '｜實際出席 ' + res.summary.attended + '｜陌生人 ' + res.summary.strangers + '</p>' +
+      '<p><a href="' + res.url + '" target="_blank">開啟報告（Google 試算表）</a></p>' +
+      '<p><a href="' + res.xlsxUrl + '" target="_blank">下載 Excel 檔</a></p>' +
+      '</div>'
+  ).setWidth(420).setHeight(220);
+  SpreadsheetApp.getUi().showModalDialog(html, '本場點名報告');
+}
+
+function menuNewSession() {
+  const ui = SpreadsheetApp.getUi();
+  const ok = ui.alert(
+    '開新場次',
+    '會清空：名單上的報到／出席欄位、報到紀錄、陌生人。\n（名單本身和場次紀錄會保留）\n\n建議先「產生本場報告」再清空。確定要清空嗎？',
+    ui.ButtonSet.YES_NO
+  );
+  if (ok !== ui.Button.YES) return;
+  clearSession_();
+  ui.alert('已清空，可以貼上新名單或直接開始下一場 ✅');
+}
+
+/* ---------------- Web API ---------------- */
+
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  try {
+    if (p.action === 'info') {
+      const set = settings_();
+      return out_({ ok: true, session: set['場次名稱'], open: isTrue_(set['開放報到']), mode: checkinMode_(set) });
+    }
+    if (p.action === 'roster') {
+      if (!isAdmin_(p.key)) return out_({ ok: false, code: 'auth', msg: '管理金鑰不正確' });
+      return out_(getRoster_());
+    }
+    return out_({ ok: true, msg: 'KC 直播點名系統後端運作中' });
+  } catch (err) {
+    return out_({ ok: false, msg: String(err) });
+  }
+}
+
+function doPost(e) {
+  let d = {};
+  try {
+    d = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+  } catch (err) {
+    return out_({ ok: false, msg: '資料格式錯誤' });
+  }
+  try {
+    if (d.action === 'checkin') return out_(checkin_(d));
+    if (d.action === 'lookup') return out_(lookup_(d));
+    if (!isAdmin_(d.key)) return out_({ ok: false, code: 'auth', msg: '管理金鑰不正確' });
+    if (d.action === 'presence') return out_(presence_(d));
+    if (d.action === 'report') return out_(buildReport_());
+    if (d.action === 'roster') return out_(getRoster_());
+    if (d.action === 'admin_get') return out_(adminGet_());
+    if (d.action === 'admin_save') return out_(adminSave_(d));
+    if (d.action === 'admin_new_session') return out_(adminNewSession_(d));
+    if (d.action === 'admin_roster') return out_(adminRoster_(d));
+    if (d.action === 'admin_remove') return out_(adminRemove_(d));
+    if (d.action === 'admin_reset_binding') return out_(adminResetBinding_(d));
+    if (d.action === 'admin_session_save') return out_(adminSessionSave_(d));
+    if (d.action === 'admin_session_delete') return out_(adminSessionDelete_(d));
+    if (d.action === 'admin_session_roster_get') return out_(adminSessionRosterGet_(d));
+    if (d.action === 'admin_session_roster') return out_(adminSessionRoster_(d));
+    if (d.action === 'admin_session_roster_remove') return out_(adminSessionRosterRemove_(d));
+    if (d.action === 'admin_session_start') return out_(adminSessionStart_(d));
+    if (d.action === 'admin_session_end') return out_(adminSessionEnd_(d));
+    if (d.action === 'admin_team_save') return out_(adminTeamSave_(d));
+    return out_({ ok: false, msg: '未知的動作' });
+  } catch (err) {
+    return out_({ ok: false, msg: '系統忙碌或發生錯誤，請稍後再試（' + err + '）' });
+  }
+}
+
+/* ---------------- 報到 ---------------- */
+
+function checkin_(d) {
+  const set = settings_();
+  const clientId0 = String(set['Google 登入用戶端 ID'] || '').trim();
+  if (d.idToken && clientId0) {
+    const g0 = verifyIdToken_(d.idToken, clientId0);
+    if (!g0) return { ok: false, code: 'token', msg: 'Google 登入驗證失敗，請重新整理頁面再登入一次。' };
+    const t = teamLogin_(g0, set);
+    if (t) return t;
+    d._g = g0;
+  }
+  if (!isTrue_(set['開放報到'])) return { ok: false, code: 'closed', msg: '目前尚未開放報到，請稍後再試。' };
+
+  const mode = checkinMode_(set);
+  const sid = String(d.studentId || '').trim().toUpperCase();
+  const email = String(d.email || '').trim().toLowerCase();
+  if ((mode === 'id' && !sid) || !email || !d.idToken) {
+    return { ok: false, code: 'missing', msg: mode === 'id' ? '請先用 Google 登入，並填寫學號與報名 Email。' : '請先用 Google 登入，並填寫報名 Email。' };
+  }
+
+  const clientId = String(set['Google 登入用戶端 ID'] || '').trim();
+  if (!clientId) return { ok: false, code: 'config', msg: '報到系統尚未設定完成，請聯絡講師。' };
+  const g = d._g || verifyIdToken_(d.idToken, clientId);
+  if (!g) return { ok: false, code: 'token', msg: 'Google 登入驗證失敗，請重新整理頁面再登入一次。' };
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    const r = sh_(SHEET.ROSTER);
+    const data = r.getDataRange().getValues();
+    let idx = -1;
+    for (let i = 1; i < data.length; i++) {
+      const hit = mode === 'email'
+        ? String(data[i][C['報名Email']]).trim().toLowerCase() === email
+        : String(data[i][C['學號']]).trim().toUpperCase() === sid;
+      if (hit) { idx = i; break; }
+    }
+    if (idx < 0 || String(data[idx][C['報名Email']]).trim().toLowerCase() !== email) {
+      log_('失敗', sid, email, g, mode === 'email' ? '報名 Email 不在名單內' : '學號或 Email 不符');
+      return { ok: false, code: 'nomatch', msg: mode === 'email' ? '找不到這個報名 Email，請確認是報名時填的 Email。' : '學號或報名 Email 不正確，請確認後再試一次。' };
+    }
+
+    const row = data[idx];
+    const rid = String(row[C['學號']]);
+    const bound = String(row[C['Gmail']] || '').trim().toLowerCase();
+    if (bound && bound !== g.email) {
+      log_('疑似冒用', rid, email, g, '此學號已綁定 ' + bound);
+      appendNote_(r, idx, '⚠ 有其他帳號嘗試用此學號報到：' + g.email);
+      return { ok: false, code: 'bound', msg: (mode === 'email' ? '這個報名資料' : '這個學號') + '已經用另一個 Google 帳號報到過了。如果有問題，請聯絡講師。' };
+    }
+    for (let i = 1; i < data.length; i++) {
+      if (i !== idx && String(data[i][C['Gmail']] || '').trim().toLowerCase() === g.email) {
+        log_('疑似冒用', rid, email, g, '此 Google 帳號已替 ' + data[i][C['學號']] + ' 報到');
+        return { ok: false, code: 'dupgmail', msg: '這個 Google 帳號已經替其他學員報到過了，請改用你自己的 Google 帳號登入。' };
+      }
+    }
+
+    if (!bound) {
+      r.getRange(idx + 1, C['報到狀態'] + 1, 1, 4).setValues([['已報到', new Date(), g.name, g.email]]);
+      log_('成功', rid, email, g, '');
+    } else {
+      log_('成功', rid, email, g, '重複報到');
+    }
+    return {
+      ok: true,
+      name: row[C['姓名']],
+      googleName: g.name,
+      gmail: g.email,
+      meetUrl: set['Meet 連結'],
+      session: set['場次名稱'],
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 已報到過的人：只要 Google 登入，就直接給 Meet 連結 */
+function lookup_(d) {
+  const set = settings_();
+  const clientId = String(set['Google 登入用戶端 ID'] || '').trim();
+  if (!clientId || !d.idToken) return { ok: false, code: 'notfound' };
+  const g = verifyIdToken_(d.idToken, clientId);
+  if (!g) return { ok: false, code: 'token' };
+  const t = teamLogin_(g, set);
+  if (t) return t;
+  const data = sh_(SHEET.ROSTER).getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][C['Gmail']] || '').trim().toLowerCase() === g.email) {
+      log_('成功', String(data[i][C['學號']]), String(data[i][C['報名Email']]), g, '重新進入（自動辨識）');
+      return {
+        ok: true,
+        returning: true,
+        name: data[i][C['姓名']],
+        googleName: g.name,
+        gmail: g.email,
+        meetUrl: set['Meet 連結'],
+        session: set['場次名稱'],
+      };
+    }
+  }
+  return { ok: false, code: 'notfound' };
+}
+
+function verifyIdToken_(token, clientId) {
+  try {
+    const res = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(token), { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+    const j = JSON.parse(res.getContentText());
+    if (j.aud !== clientId) return null;
+    if (String(j.email_verified) !== 'true') return null;
+    return { email: String(j.email).toLowerCase(), name: j.name || String(j.email).split('@')[0] };
+  } catch (err) {
+    return null;
+  }
+}
+
+/* ---------------- 外掛用：名單、出席 ---------------- */
+
+function getRoster_() {
+  const set = settings_();
+  const data = sh_(SHEET.ROSTER).getDataRange().getValues();
+  const students = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    const id = String(r[C['學號']]).trim();
+    if (!id) continue;
+    students.push({
+      id,
+      name: String(r[C['姓名']] || ''),
+      status: String(r[C['報到狀態']] || ''),
+      checkinAt: r[C['報到時間']] || '',
+      googleName: String(r[C['Google名稱']] || ''),
+      gmail: String(r[C['Gmail']] || ''),
+      note: String(r[C['備註']] || ''),
+    });
+  }
+  const logs = sh_(SHEET.LOG).getDataRange().getValues().slice(1);
+  const suspicious = logs.filter((l) => l[1] === '疑似冒用').length;
+  const team = listTeam_().filter((t) => t.googleName).map((t) => ({ name: t.googleName, role: t.role }));
+  return { ok: true, session: set['場次名稱'], open: isTrue_(set['開放報到']), students, suspicious, team, ts: new Date() };
+}
+
+/** d.present = [學號...]；d.strangers = [{meetName, note}] */
+function presence_(d) {
+  const now = new Date();
+  const present = new Set((d.present || []).map((x) => String(x).trim().toUpperCase()));
+  const lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    const r = sh_(SHEET.ROSTER);
+    const n = r.getLastRow() - 1;
+    if (n > 0 && present.size) {
+      const ids = r.getRange(2, 1, n, 1).getValues();
+      const rng = r.getRange(2, C['首次出現'] + 1, n, 3);
+      const vals = rng.getValues();
+      for (let i = 0; i < n; i++) {
+        if (!present.has(String(ids[i][0]).trim().toUpperCase())) continue;
+        if (!vals[i][0]) vals[i][0] = now;
+        vals[i][1] = now;
+        vals[i][2] = Math.round((now - new Date(vals[i][0])) / 60000);
+      }
+      rng.setValues(vals);
+    }
+
+    const s = sh_(SHEET.STRANGER);
+    const list = d.strangers || [];
+    if (list.length) {
+      const sd = s.getDataRange().getValues();
+      const pos = {};
+      for (let i = 1; i < sd.length; i++) pos[String(sd[i][0])] = i;
+      const append = [];
+      list.forEach((x) => {
+        const name = String(x.meetName || '').trim();
+        if (!name) return;
+        if (pos[name] !== undefined) {
+          s.getRange(pos[name] + 1, 3).setValue(now);
+        } else {
+          append.push([name, now, now, x.note || '']);
+          pos[name] = -1;
+        }
+      });
+      if (append.length) s.getRange(s.getLastRow() + 1, 1, append.length, 4).setValues(append);
+    }
+
+    const removed = d.removed || [];
+    if (removed.length) {
+      const tz = Session.getScriptTimeZone() || 'Asia/Taipei';
+      const sd = s.getDataRange().getValues();
+      removed.forEach((x) => {
+        const name = String(x.meetName || '').trim();
+        if (!name) return;
+        const at = x.at ? new Date(x.at) : now;
+        const note = '已於 ' + Utilities.formatDate(at, tz, 'HH:mm') + ' 移出通話' + (x.ban ? '（禁止再加入）' : '');
+        let row = -1;
+        for (let i = 1; i < sd.length; i++) if (String(sd[i][0]) === name) { row = i + 1; break; }
+        if (row === -1) {
+          s.appendRow([name, at, at, note]);
+          sd.push([name, at, at, note]);
+        } else {
+          const cur = String(s.getRange(row, 4).getValue() || '');
+          s.getRange(row, 4).setValue(cur && cur.indexOf('移出通話') === -1 ? cur + '；' + note : note);
+        }
+      });
+    }
+    return { ok: true, ts: now };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---------------- 管理中心 ---------------- */
+
+function adminGet_() {
+  const set = settings_();
+  const data = sh_(SHEET.ROSTER).getDataRange().getValues();
+  const students = [];
+  for (let i = 1; i < data.length; i++) {
+    const r = data[i];
+    const id = String(r[C['學號']]).trim();
+    if (!id) continue;
+    students.push({
+      id,
+      name: String(r[C['姓名']] || ''),
+      email: String(r[C['報名Email']] || ''),
+      status: String(r[C['報到狀態']] || ''),
+      googleName: String(r[C['Google名稱']] || ''),
+      gmail: String(r[C['Gmail']] || ''),
+      attended: !!r[C['首次出現']],
+      note: String(r[C['備註']] || ''),
+    });
+  }
+  const hist = sh_(SHEET.HISTORY).getDataRange().getValues().slice(1).filter((r) => r[0]);
+  const history = hist.reverse().slice(0, 50).map((r) => ({
+    at: r[0], session: r[1], total: r[2], checked: r[3], attended: r[4], checkedNotIn: r[5], notChecked: r[6], strangers: r[7], issues: r[8], url: r[9],
+  }));
+  const logs = sh_(SHEET.LOG).getDataRange().getValues().slice(1);
+  return {
+    ok: true,
+    settings: { session: String(set['場次名稱'] || ''), meetUrl: String(set['Meet 連結'] || ''), open: isTrue_(set['開放報到']), mode: checkinMode_(set) },
+    students,
+    history,
+    suspicious: logs.filter((l) => l[1] === '疑似冒用').length,
+    hasActivity: logs.length > 0 || students.some((s) => s.status === '已報到'),
+    sheetUrl: SpreadsheetApp.getActive().getUrl(),
+    sessions: listSessions_(students.length),
+    currentId: String(set['目前場次ID'] || ''),
+    team: listTeam_(),
+  };
+}
+
+function adminSave_(d) {
+  const session = String(d.session || '').trim();
+  const meetUrl = String(d.meetUrl || '').trim();
+  if (!session) return { ok: false, msg: '請填寫場次名稱' };
+  if (meetUrl && !/^https:\/\/meet\.google\.com\/[a-z0-9-]+/i.test(meetUrl)) {
+    return { ok: false, msg: 'Meet 連結格式不對，應該像 https://meet.google.com/abc-defg-hij' };
+  }
+  setSetting_('場次名稱', session);
+  setSetting_('Meet 連結', meetUrl);
+  setSetting_('開放報到', d.open ? 'TRUE' : 'FALSE');
+  if (d.mode) setSetting_('報到方式', d.mode === 'email' ? '只需報名Email' : '學號+Email');
+  return adminGet_();
+}
+
+function adminNewSession_(d) {
+  let report = null;
+  if (d.report) {
+    const info = adminGet_();
+    if (info.hasActivity) report = buildReport_();
+  }
+  clearSession_();
+  if (d.session !== undefined) {
+    const res = adminSave_(d);
+    if (!res.ok) return res;
+  }
+  const out = adminGet_();
+  out.report = report;
+  return out;
+}
+
+/** d.mode = 'replace' | 'append'；d.rows = [[學號, 姓名, 報名Email], ...] */
+function adminRoster_(d) {
+  const rows = cleanRows_(d.rows);
+  const errors = validateRows_(rows);
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    const sh = sh_(SHEET.ROSTER);
+    const last = sh.getLastRow();
+    if (d.mode === 'append' && last > 1) {
+      const ids = sh.getRange(2, 1, last - 1, 1).getValues().map((x) => String(x[0]).trim().toUpperCase());
+      rows.forEach((r) => { if (ids.indexOf(r[0].toUpperCase()) !== -1) errors.push('學號 ' + r[0] + ' 已經在名單裡'); });
+      const mails = sh.getRange(2, 3, last - 1, 1).getValues().map((x) => String(x[0]).trim().toLowerCase());
+      rows.forEach((r) => { if (mails.indexOf(r[2].toLowerCase()) !== -1) errors.push('Email ' + r[2] + ' 已經在名單裡'); });
+    }
+    if (errors.length) return { ok: false, msg: '名單有問題，沒有匯入任何資料', errors: errors.slice(0, 30) };
+
+    if (d.mode !== 'append' && last > 1) sh.getRange(2, 1, last - 1, ROSTER_HEADERS.length).clearContent();
+    const start = d.mode === 'append' ? Math.max(sh.getLastRow(), 1) + 1 : 2;
+    sh.getRange(start, 1, rows.length, 1).setNumberFormat('@');
+    sh.getRange(start, 1, rows.length, 3).setValues(rows);
+  } finally {
+    lock.releaseLock();
+  }
+  const out = adminGet_();
+  out.imported = rows.length;
+  return out;
+}
+
+function adminRemove_(d) {
+  const id = String(d.id || '').trim().toUpperCase();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    const sh = sh_(SHEET.ROSTER);
+    const data = sh.getDataRange().getValues();
+    for (let i = data.length - 1; i >= 1; i--) {
+      if (String(data[i][0]).trim().toUpperCase() === id) sh.deleteRow(i + 1);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return adminGet_();
+}
+
+/** 學員換了 Google 帳號：清掉他的綁定，讓他重新報到 */
+function adminResetBinding_(d) {
+  const id = String(d.id || '').trim().toUpperCase();
+  const sh = sh_(SHEET.ROSTER);
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim().toUpperCase() === id) {
+      sh.getRange(i + 1, C['報到狀態'] + 1, 1, ROSTER_HEADERS.length - C['報到狀態']).clearContent();
+    }
+  }
+  return adminGet_();
+}
+
+function clearSession_() {
+  const r = sh_(SHEET.ROSTER);
+  if (r.getLastRow() > 1) r.getRange(2, C['報到狀態'] + 1, r.getLastRow() - 1, ROSTER_HEADERS.length - C['報到狀態']).clearContent();
+  [SHEET.LOG, SHEET.STRANGER].forEach((n) => {
+    const s = sh_(n);
+    if (s.getLastRow() > 1) s.getRange(2, 1, s.getLastRow() - 1, s.getLastColumn()).clearContent();
+  });
+}
+
+function setSetting_(name, value) {
+  const s = sh_(SHEET.SETTINGS);
+  const data = s.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === name) { s.getRange(i + 1, 2).setValue(value); return; }
+  }
+  s.appendRow([name, value, '']);
+}
+
+/* ---------------- 名單檢查 ---------------- */
+
+function cleanRows_(rows) {
+  return (rows || []).map((r) => [String(r[0] || '').trim(), String(r[1] || '').trim(), String(r[2] || '').trim()]);
+}
+
+function validateRows_(rows, existingIds, existingMails) {
+  const errors = [];
+  const seen = {};
+  const seenMail = {};
+  const ids = existingIds || [];
+  const mails = existingMails || [];
+  rows.forEach((r, i) => {
+    const k = r[0].toUpperCase();
+    const m = r[2].toLowerCase();
+    if (!r[0]) errors.push('第 ' + (i + 1) + ' 筆沒有學號');
+    else if (seen[k]) errors.push('學號 ' + r[0] + ' 重複');
+    else if (ids.indexOf(k) !== -1) errors.push('學號 ' + r[0] + ' 已經在名單裡');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r[2])) errors.push('學號 ' + (r[0] || '(空白)') + ' 的 Email 格式不對');
+    else if (seenMail[m]) errors.push('Email ' + r[2] + ' 重複');
+    else if (mails.indexOf(m) !== -1) errors.push('Email ' + r[2] + ' 已經在名單裡');
+    seen[k] = true;
+    seenMail[m] = true;
+  });
+  if (!rows.length) errors.push('沒有可匯入的資料');
+  return errors;
+}
+
+/* ---------------- 場次清單（預開多場） ---------------- */
+
+function sessionsSheet_() { ensureHeaders_(SHEET.SESSIONS, SESSION_HEADERS); return sh_(SHEET.SESSIONS); }
+function prepSheet_() {
+  ensureHeaders_(SHEET.PREP, PREP_HEADERS);
+  const p = sh_(SHEET.PREP);
+  p.getRange('B:B').setNumberFormat('@');
+  return p;
+}
+
+function listSessions_(currentCount) {
+  const curId = String(settings_()['目前場次ID'] || '');
+  const counts = {};
+  prepSheet_().getDataRange().getValues().slice(1).forEach((r) => {
+    if (r[0]) counts[r[0]] = (counts[r[0]] || 0) + 1;
+  });
+  return sessionsSheet_().getDataRange().getValues().slice(1).filter((r) => r[0]).map((r) => ({
+    id: String(r[0]),
+    name: String(r[1] || ''),
+    when: String(r[2] || ''),
+    meetUrl: String(r[3] || ''),
+    status: String(r[0]) === curId && r[4] !== '已結束' ? '進行中' : String(r[4] || '未開始'),
+    reportUrl: String(r[5] || ''),
+    count: String(r[0]) === curId ? currentCount : counts[r[0]] || 0,
+    current: String(r[0]) === curId,
+  }));
+}
+
+function findSessionRow_(id) {
+  const sh = sessionsSheet_();
+  const data = sh.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) if (String(data[i][0]) === String(id)) return { sh, row: i + 1, values: data[i] };
+  return null;
+}
+
+function checkMeet_(url) {
+  return !url || /^https:\/\/meet\.google\.com\/[a-z0-9-]+/i.test(url);
+}
+
+function adminSessionSave_(d) {
+  const name = String(d.name || '').trim();
+  const when = String(d.when || '').trim();
+  const meetUrl = String(d.meetUrl || '').trim();
+  if (!name) return { ok: false, msg: '請填寫場次名稱' };
+  if (!checkMeet_(meetUrl)) return { ok: false, msg: 'Meet 連結格式不對，應該像 https://meet.google.com/abc-defg-hij' };
+  const sh = sessionsSheet_();
+  if (d.id) {
+    const f = findSessionRow_(d.id);
+    if (!f) return { ok: false, msg: '找不到這個場次' };
+    sh.getRange(f.row, 2, 1, 3).setValues([[name, when, meetUrl]]);
+    if (String(settings_()['目前場次ID'] || '') === String(d.id)) {
+      setSetting_('場次名稱', name);
+      setSetting_('Meet 連結', meetUrl);
+    }
+  } else {
+    const id = 'S' + new Date().getTime().toString(36).toUpperCase();
+    sh.appendRow([id, name, when, meetUrl, '未開始', '', new Date()]);
+  }
+  return adminGet_();
+}
+
+function adminSessionDelete_(d) {
+  if (String(settings_()['目前場次ID'] || '') === String(d.id)) return { ok: false, msg: '進行中的場次不能刪除，請先結束或開始另一場' };
+  const f = findSessionRow_(d.id);
+  if (f) f.sh.deleteRow(f.row);
+  deletePrep_(d.id);
+  return adminGet_();
+}
+
+function prepRows_(id) {
+  return prepSheet_().getDataRange().getValues().slice(1)
+    .filter((r) => String(r[0]) === String(id))
+    .map((r) => ({ id: String(r[1]), name: String(r[2] || ''), email: String(r[3] || '') }));
+}
+
+function deletePrep_(id, studentId) {
+  const p = prepSheet_();
+  const data = p.getDataRange().getValues();
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) !== String(id)) continue;
+    if (studentId && String(data[i][1]).trim().toUpperCase() !== String(studentId).trim().toUpperCase()) continue;
+    p.deleteRow(i + 1);
+  }
+}
+
+function adminSessionRosterGet_(d) {
+  if (String(settings_()['目前場次ID'] || '') === String(d.id)) return adminGet_();
+  return { ok: true, rows: prepRows_(d.id) };
+}
+
+function adminSessionRoster_(d) {
+  if (!d.id || String(settings_()['目前場次ID'] || '') === String(d.id)) return adminRoster_(d);
+  if (!findSessionRow_(d.id)) return { ok: false, msg: '找不到這個場次' };
+  const rows = cleanRows_(d.rows);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    const existing = d.mode === 'append' ? prepRows_(d.id) : [];
+    const errors = validateRows_(rows, existing.map((x) => x.id.toUpperCase()), existing.map((x) => x.email.toLowerCase()));
+    if (errors.length) return { ok: false, msg: '名單有問題，沒有匯入任何資料', errors: errors.slice(0, 30) };
+    if (d.mode !== 'append') deletePrep_(d.id);
+    const p = prepSheet_();
+    p.getRange(p.getLastRow() + 1, 1, rows.length, 4).setValues(rows.map((r) => [d.id, r[0], r[1], r[2]]));
+  } finally {
+    lock.releaseLock();
+  }
+  const out = adminGet_();
+  out.rows = prepRows_(d.id);
+  out.imported = rows.length;
+  return out;
+}
+
+function adminSessionRosterRemove_(d) {
+  if (String(settings_()['目前場次ID'] || '') === String(d.id)) return adminRemove_({ id: d.studentId });
+  deletePrep_(d.id, d.studentId);
+  const out = adminGet_();
+  out.rows = prepRows_(d.id);
+  return out;
+}
+
+/** 結束目前場次：可選擇先產生報告，標記為已結束並關閉報到 */
+function endCurrent_(withReport) {
+  const set = settings_();
+  const curId = String(set['目前場次ID'] || '');
+  let report = null;
+  if (withReport && adminGet_().hasActivity) report = buildReport_();
+  if (curId) {
+    const f = findSessionRow_(curId);
+    if (f) f.sh.getRange(f.row, 5, 1, 2).setValues([['已結束', report ? report.url : f.values[5] || '']]);
+  }
+  return report;
+}
+
+function adminSessionEnd_(d) {
+  const report = endCurrent_(!!d.report);
+  setSetting_('開放報到', 'FALSE');
+  const out = adminGet_();
+  out.report = report;
+  return out;
+}
+
+function adminSessionStart_(d) {
+  const f = findSessionRow_(d.id);
+  if (!f) return { ok: false, msg: '找不到這個場次' };
+  if (String(settings_()['目前場次ID'] || '') === String(d.id) && f.values[4] !== '已結束') return { ok: false, msg: '這一場已經在進行中' };
+  const report = endCurrent_(!!d.report);
+
+  clearSession_();
+  const rows = prepRows_(d.id);
+  const r = sh_(SHEET.ROSTER);
+  if (r.getLastRow() > 1) r.getRange(2, 1, r.getLastRow() - 1, ROSTER_HEADERS.length).clearContent();
+  if (rows.length) {
+    r.getRange(2, 1, rows.length, 1).setNumberFormat('@');
+    r.getRange(2, 1, rows.length, 3).setValues(rows.map((x) => [x.id, x.name, x.email]));
+  }
+  deletePrep_(d.id);
+
+  setSetting_('場次名稱', String(f.values[1] || ''));
+  setSetting_('Meet 連結', String(f.values[3] || ''));
+  setSetting_('開放報到', d.open === false ? 'FALSE' : 'TRUE');
+  setSetting_('目前場次ID', String(d.id));
+  f.sh.getRange(f.row, 5).setValue('進行中');
+
+  const out = adminGet_();
+  out.report = report;
+  out.started = { name: String(f.values[1] || ''), count: rows.length };
+  return out;
+}
+
+/* ---------------- 報告 ---------------- */
+
+function buildReport_() {
+  const set = settings_();
+  const tz = Session.getScriptTimeZone() || 'Asia/Taipei';
+  const fmt = (v) => (v ? Utilities.formatDate(new Date(v), tz, 'yyyy/MM/dd HH:mm') : '');
+
+  const rows = sh_(SHEET.ROSTER).getDataRange().getValues().slice(1).filter((r) => String(r[0]).trim());
+  const strangers = sh_(SHEET.STRANGER).getDataRange().getValues().slice(1).filter((r) => r[0]);
+  const issues = sh_(SHEET.LOG).getDataRange().getValues().slice(1).filter((l) => l[1] && l[1] !== '成功');
+
+  const detail = rows.map((r) => {
+    const checked = r[C['報到狀態']] === '已報到';
+    const attended = !!r[C['首次出現']];
+    const status = attended ? '出席' : checked ? '已報到未出席' : '未報到';
+    return [
+      String(r[C['學號']]), r[C['姓名']], r[C['報名Email']], status, fmt(r[C['報到時間']]),
+      r[C['Google名稱']], r[C['Gmail']], fmt(r[C['首次出現']]), fmt(r[C['最後出現']]),
+      r[C['出席分鐘']] === '' ? '' : r[C['出席分鐘']], r[C['備註']],
+    ];
+  });
+  const summary = {
+    total: rows.length,
+    checked: rows.filter((r) => r[C['報到狀態']] === '已報到').length,
+    attended: rows.filter((r) => r[C['首次出現']]).length,
+    strangers: strangers.length,
+    issues: issues.filter((l) => l[1] === '疑似冒用').length,
+  };
+  summary.checkedNotIn = rows.filter((r) => r[C['報到狀態']] === '已報到' && !r[C['首次出現']]).length;
+  summary.notChecked = summary.total - summary.checked;
+
+  const now = new Date();
+  const title = '點名報告_' + set['場次名稱'] + '_' + Utilities.formatDate(now, tz, 'yyyyMMdd_HHmm');
+  const rep = SpreadsheetApp.create(title);
+
+  const s1 = rep.getSheets()[0];
+  s1.setName('摘要');
+  const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 + '%' : '-');
+  const sumRows = [
+    ['項目', '數值'],
+    ['場次名稱', set['場次名稱']],
+    ['報告產生時間', fmt(now)],
+    ['名單人數', summary.total],
+    ['已報到', summary.checked],
+    ['報到率', pct(summary.checked, summary.total)],
+    ['實際出席（有在會議中出現）', summary.attended],
+    ['出席率', pct(summary.attended, summary.total)],
+    ['已報到但未出席', summary.checkedNotIn],
+    ['未報到', summary.notChecked],
+    ['陌生人（不在名單內）', summary.strangers],
+    ['疑似冒用／序號外流嘗試', summary.issues],
+  ];
+  s1.getRange(1, 1, sumRows.length, 2).setValues(sumRows);
+  styleHeader_(s1, 2);
+  s1.setColumnWidth(1, 240); s1.setColumnWidth(2, 220);
+
+  const s2 = rep.insertSheet('出席明細');
+  const h2 = ['學號', '姓名', '報名Email', '出席狀態', '報到時間', 'Google名稱', 'Gmail', '首次出現', '最後出現', '出席分鐘(約)', '備註'];
+  s2.getRange(1, 1, 1, h2.length).setValues([h2]);
+  if (detail.length) {
+    s2.getRange(2, 1, detail.length, 1).setNumberFormat('@');
+    s2.getRange(2, 1, detail.length, h2.length).setValues(detail);
+  }
+  styleHeader_(s2, h2.length);
+  s2.setFrozenRows(1);
+  s2.autoResizeColumns(1, h2.length);
+
+  const s3 = rep.insertSheet('陌生人');
+  s3.getRange(1, 1, 1, 4).setValues([['Meet 顯示名稱', '首次出現', '最後出現', '說明']]);
+  if (strangers.length) s3.getRange(2, 1, strangers.length, 4).setValues(strangers.map((x) => [x[0], fmt(x[1]), fmt(x[2]), x[3]]));
+  styleHeader_(s3, 4);
+  s3.autoResizeColumns(1, 4);
+
+  const s4 = rep.insertSheet('異常報到');
+  s4.getRange(1, 1, 1, LOG_HEADERS.length).setValues([LOG_HEADERS]);
+  if (issues.length) s4.getRange(2, 1, issues.length, LOG_HEADERS.length).setValues(issues.map((l) => [fmt(l[0])].concat(l.slice(1, LOG_HEADERS.length))));
+  styleHeader_(s4, LOG_HEADERS.length);
+  s4.autoResizeColumns(1, LOG_HEADERS.length);
+
+  SpreadsheetApp.flush();
+  DriveApp.getFileById(rep.getId()).moveTo(reportFolder_());
+
+  const url = rep.getUrl();
+  sh_(SHEET.HISTORY).appendRow([now, set['場次名稱'], summary.total, summary.checked, summary.attended, summary.checkedNotIn, summary.notChecked, summary.strangers, summary.issues, url]);
+
+  return { ok: true, url, xlsxUrl: 'https://docs.google.com/spreadsheets/d/' + rep.getId() + '/export?format=xlsx', title, summary };
+}
+
+function reportFolder_() {
+  const s = sh_(SHEET.SETTINGS);
+  const data = s.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === '報告資料夾 ID') {
+      const id = String(data[i][1] || '').trim();
+      if (id) {
+        try { return DriveApp.getFolderById(id); } catch (e) { /* 重新建立 */ }
+      }
+      const f = DriveApp.createFolder('直播點名報告');
+      s.getRange(i + 1, 2).setValue(f.getId());
+      return f;
+    }
+  }
+  return DriveApp.createFolder('直播點名報告');
+}
+
+/* ---------------- 團隊（主理人／工作人員） ---------------- */
+
+function teamSheet_() { ensureHeaders_(SHEET.TEAM, TEAM_HEADERS); return sh_(SHEET.TEAM); }
+
+function normRole_(v) { return /主理|host/i.test(String(v || '')) ? '主理人' : '工作人員'; }
+
+function listTeam_() {
+  const data = teamSheet_().getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    const email = String(data[i][0] || '').trim().toLowerCase();
+    if (!email) continue;
+    out.push({ email: email, role: normRole_(data[i][1]), googleName: String(data[i][2] || ''), lastAt: data[i][3] || '' });
+  }
+  return out;
+}
+
+/** 團隊成員用 Google 登入報到頁：記下 Google 名稱（＝Meet 顯示名稱），直接給連結 */
+function teamLogin_(g, set) {
+  const s = teamSheet_();
+  const data = s.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '').trim().toLowerCase() !== g.email) continue;
+    s.getRange(i + 1, 3, 1, 2).setValues([[g.name, new Date()]]);
+    const role = normRole_(data[i][1]);
+    return {
+      ok: true,
+      team: true,
+      role: role,
+      name: g.name,
+      googleName: g.name,
+      gmail: g.email,
+      meetUrl: set['Meet 連結'],
+      session: set['場次名稱'],
+    };
+  }
+  return null;
+}
+
+/** d.team = [{email, role}]：整份覆寫，保留已記錄的 Google 名稱 */
+function adminTeamSave_(d) {
+  const list = d.team || [];
+  const old = {};
+  listTeam_().forEach((t) => (old[t.email] = t));
+  const seen = {};
+  const rows = [];
+  for (let i = 0; i < list.length; i++) {
+    const email = String(list[i].email || '').trim().toLowerCase();
+    if (!email) continue;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, msg: 'Email 格式不對：' + email };
+    if (seen[email]) return { ok: false, msg: 'Email 重複：' + email };
+    seen[email] = true;
+    const o = old[email] || {};
+    rows.push([email, normRole_(list[i].role), o.googleName || '', o.lastAt || '']);
+  }
+  const s = teamSheet_();
+  if (s.getLastRow() > 1) s.getRange(2, 1, s.getLastRow() - 1, TEAM_HEADERS.length).clearContent();
+  if (rows.length) s.getRange(2, 1, rows.length, TEAM_HEADERS.length).setValues(rows);
+  return { ok: true, team: listTeam_() };
+}
+
+/* ---------------- 工具 ---------------- */
+
+function settings_() {
+  const data = sh_(SHEET.SETTINGS).getDataRange().getValues();
+  const o = {};
+  for (let i = 1; i < data.length; i++) if (data[i][0]) o[String(data[i][0]).trim()] = data[i][1];
+  return o;
+}
+function isAdmin_(key) {
+  const k = String(settings_()['管理金鑰'] || '').trim();
+  return !!k && String(key || '').trim() === k;
+}
+/** 報到方式：'id'＝學號＋Email（預設）；'email'＝只需報名 Email */
+function checkinMode_(set) {
+  return /email|只/i.test(String((set || settings_())['報到方式'] || '')) ? 'email' : 'id';
+}
+function isTrue_(v) { return v === true || String(v).trim().toUpperCase() === 'TRUE'; }
+function sh_(name) {
+  const s = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!s) throw new Error('找不到工作表「' + name + '」，請先執行「① 初始化」');
+  return s;
+}
+function getOrCreate_(name) {
+  const ss = SpreadsheetApp.getActive();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+function ensureHeaders_(name, headers) {
+  const s = getOrCreate_(name);
+  if (s.getLastRow() < 1) {
+    s.getRange(1, 1, 1, headers.length).setValues([headers]);
+    styleHeader_(s, headers.length);
+  }
+}
+function styleHeader_(s, n) {
+  s.getRange(1, 1, 1, n).setFontWeight('bold').setBackground('#1C2B4A').setFontColor('#FFFFFF');
+  s.setFrozenRows(1);
+}
+function log_(result, sid, email, g, note) {
+  sh_(SHEET.LOG).appendRow([new Date(), result, sid, email, g ? g.name : '', g ? g.email : '', note]);
+}
+function appendNote_(sheet, idx, text) {
+  const cell = sheet.getRange(idx + 1, C['備註'] + 1);
+  const cur = String(cell.getValue() || '');
+  if (cur.indexOf(text) === -1) cell.setValue(cur ? cur + '\n' + text : text);
+}
+function out_(o) {
+  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+}
