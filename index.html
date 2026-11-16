@@ -148,12 +148,16 @@ function showSuccess(j){
   let url = j.meetUrl || '#';
   try{ const u=new URL(url); u.searchParams.set('authuser', j.gmail); url=u.toString(); }catch(_){}
   $('meetBtn').href = url;
-  $('okView').querySelector('h1').textContent = j.returning ? '你已經報到過了 👋' : '報到完成！';
-  $('okName').textContent = (j.name ? j.name+'，' : '') + '歡迎來到「'+(j.session||'直播')+'」';
+  $('okView').querySelector('h1').textContent = j.team ? '團隊成員已確認 👑' : (j.returning ? '你已經報到過了 👋' : '報到完成！');
+  $('okName').textContent = j.team
+    ? (j.name ? j.name+'，' : '') + '你是「'+(j.session||'直播')+'」的'+(j.role||'工作人員')+'，不用填學號。'
+    : (j.name ? j.name+'，' : '') + '歡迎來到「'+(j.session||'直播')+'」';
   $('okWarn').innerHTML = '';
   const t1=document.createElement('div'); t1.innerHTML='📌 請用 <b></b> 這個帳號進入 Google Meet。';
   t1.querySelector('b').textContent=j.gmail;
-  const t2=document.createElement('div'); t2.textContent='你在直播中顯示的名字會是「'+j.googleName+'」。用其他帳號進入可能會被請出直播間喔。';
+  const t2=document.createElement('div'); t2.textContent = j.team
+    ? '控制台會用「'+j.googleName+'」這個名字把你標成'+(j.role||'工作人員')+'。改過 Google 名字的話，回來這一頁重新登入一次就會更新。'
+    : '你在直播中顯示的名字會是「'+j.googleName+'」。用其他帳號進入可能會被請出直播間喔。';
   $('okWarn').append(t1,t2);
   $('formView').style.display='none';
   $('okView').style.display='block';
