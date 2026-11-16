@@ -43,6 +43,8 @@
   .success .big{font-size:44px}
   .warn{background:#FFF4E5;border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.7;text-align:left;margin-top:16px}
   .muted{color:var(--muted);font-size:13px}
+  .hint{color:var(--muted);font-size:12.5px;line-height:1.6;margin:6px 2px 0}
+  .hint a{color:var(--red)}
   .disabled{opacity:.45;pointer-events:none}
   footer{margin-top:28px;text-align:center;font-size:12px;color:var(--muted)}
   footer a{color:var(--muted)}
@@ -67,10 +69,12 @@
       <form id="form" autocomplete="on">
         <div id="sidBox">
           <label for="sid">學號</label>
-          <input id="sid" name="sid" placeholder="例如 KC-001" required autocapitalize="characters">
+          <input id="sid" name="sid" placeholder="例如 KC001" required autocapitalize="characters">
+          <p class="hint">不知道學號？登入 <a href="https://kc-hub.kclive.link" target="_blank" rel="noopener">KC 知識庫</a>，點左下角「個人檔案」，按學號旁的「複製」再貼過來就好。</p>
         </div>
         <label for="email">報名時填的 Email</label>
-        <input id="email" name="email" type="email" placeholder="報名表上的 Email（不一定是 Gmail）" required>
+        <input id="email" name="email" type="email" placeholder="報名時填寫的 Email" required>
+        <p class="hint">請填報名時留的 Email，用來核對你的報名資料；不一定要跟上面登入的 Google 帳號相同。</p>
         <button class="btn" id="submit" type="submit">完成報到</button>
       </form>
     </div>
