@@ -101,7 +101,7 @@ const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzJvac-xlHsOMiQqSxun
 const CLIENT_ID  = '829310906546-ef5m56070jn40usu6emsifv3elsej2lk.apps.googleusercontent.com';
 /* ========================================================== */
 
-let idToken = null, profile = null, mode = 'id';
+let idToken = null, profile = null, mode = 'id', sessionName = '';
 const $ = (id) => document.getElementById(id);
 
 function showMsg(text, type){ const m=$('msg'); m.className='msg '+(type||'err'); m.textContent=text; }
@@ -168,7 +168,7 @@ window.addEventListener('load', async () => {
   try{
     const r = await fetch(SCRIPT_URL+'?action=info');
     const j = await r.json();
-    if(j.session){ $('title').textContent=j.session+'｜報到'; document.title=j.session+'｜報到'; }
+    if(j.session){ sessionName=j.session; $('title').textContent=j.session+'｜報到'; document.title=j.session+'｜報到'; }
     if(j.open===false){ showMsg('目前尚未開放報到，請稍後再回來這一頁。','info'); }
     if(j.mode==='email'){
       mode='email';
@@ -199,6 +199,11 @@ $('form').addEventListener('submit', async (e) => {
     const j = await r.json();
     if(!j.ok){
       if(j.code==='token'){ idToken=null; }
+      if(j.code==='nomatch'){
+        const what = mode==='email' ? '報名 Email' : '學號和報名 Email';
+        showMsg('這一場的報名名單裡找不到你的資料。請先確認你已經報名'+(sessionName ? '「'+sessionName+'」' : '這一場直播')+'；如果已經報名，再檢查'+what+'是否和報名時填的一樣。');
+        return;
+      }
       showMsg(j.msg || '報到失敗，請再試一次。');
       return;
     }
