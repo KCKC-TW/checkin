@@ -145,6 +145,9 @@ async function checkReturning(){
   }catch(e){ /* 查不到就走一般報到 */ }
   hideMsg();
   $('step2').classList.remove('disabled');
+  if (profile && profile.email && $('email') && !$('email').value.trim()) {
+    $('email').value = profile.email;
+  }
   (mode==='email' ? $('email') : $('sid')).focus();
 }
 
@@ -168,6 +171,15 @@ function showSuccess(j){
 }
 
 window.addEventListener('load', async () => {
+  // 若從 KC 知識庫點進來帶有 ?email=...&sid=...，自動預填報名 Email 與學號（防打錯、免查學號）
+  try {
+    const sp = new URLSearchParams(location.search);
+    const qEmail = (sp.get('email') || '').trim();
+    const qSid = (sp.get('sid') || sp.get('id') || '').trim();
+    if (qEmail && $('email')) $('email').value = qEmail;
+    if (qSid && $('sid')) $('sid').value = qSid;
+  } catch (_) {}
+
   // 場次資訊
   try{
     const r = await fetch(SCRIPT_URL+'?action=info');
