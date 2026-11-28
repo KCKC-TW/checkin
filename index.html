@@ -106,6 +106,7 @@ const CLIENT_ID  = '829310906546-ef5m56070jn40usu6emsifv3elsej2lk.apps.googleuse
 /* ========================================================== */
 
 let idToken = null, profile = null, mode = 'id', sessionName = '';
+const targetSessionId = (new URLSearchParams(location.search).get('session') || '').trim();
 const $ = (id) => document.getElementById(id);
 
 function showMsg(text, type){ const m=$('msg'); m.className='msg '+(type||'err'); m.textContent=text; }
@@ -139,7 +140,7 @@ function onGoogle(resp){
 async function checkReturning(){
   showMsg('確認報到狀態中…','info');
   try{
-    const r = await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({ action:'lookup', idToken }) });
+    const r = await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({ action:'lookup', idToken, ...(targetSessionId ? { sessionId: targetSessionId } : {}) }) });
     const j = await r.json();
     if(j.ok){ hideMsg(); return showSuccess(j); }
   }catch(e){ /* 查不到就走一般報到 */ }
@@ -182,7 +183,8 @@ window.addEventListener('load', async () => {
 
   // 場次資訊
   try{
-    const r = await fetch(SCRIPT_URL+'?action=info');
+    const infoUrl = SCRIPT_URL + '?action=info' + (targetSessionId ? '&session=' + encodeURIComponent(targetSessionId) : '');
+    const r = await fetch(infoUrl);
     const j = await r.json();
     if(j.session){ sessionName=j.session; $('title').textContent=j.session+'｜報到'; document.title=j.session+'｜報到'; }
     if(j.open===false){ showMsg('目前尚未開放報到，請稍後再回來這一頁。','info'); }
@@ -210,7 +212,8 @@ $('form').addEventListener('submit', async (e) => {
   const btn=$('submit'); btn.disabled=true; btn.textContent='報到中…'; hideMsg();
   try{
     const r = await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({
-      action:'checkin', idToken, studentId: $('sid').value.trim(), email: $('email').value.trim()
+      action:'checkin', idToken, studentId: $('sid').value.trim(), email: $('email').value.trim(),
+      ...(targetSessionId ? { sessionId: targetSessionId } : {})
     })});
     const j = await r.json();
     if(!j.ok){
